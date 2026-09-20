@@ -220,6 +220,7 @@ export async function startCodexProxy({
                 prompt,
                 tier,
                 model,
+                recommended: chosen?.tier ?? null,
                 confidence: jev?.confidence ?? null,
                 metrics: jev?.metrics ?? null,
                 reason: decision.reason,

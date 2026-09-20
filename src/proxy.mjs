@@ -281,6 +281,7 @@ export async function startProxy({ upstreamURL = ANTHROPIC_BASE_URL, route = ask
               fresh = {
                 prompt,
                 model,
+                recommended: chosen?.tier ?? null,
                 confidence: jev?.confidence ?? null,
                 metrics: jev?.metrics ?? null,
                 reason,

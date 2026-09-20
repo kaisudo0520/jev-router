@@ -1,3 +1,5 @@
+import { tierOf } from "./config.mjs";
+
 const WIDTH = 33;
 const row = (text = "") => `│ ${text.slice(0, WIDTH - 2).padEnd(WIDTH - 2)} │`;
 const metric = (value) => (Number.isFinite(value) ? value.toFixed(2) : "n/a");
@@ -27,7 +29,13 @@ export function formatExplanation(status) {
 
   const m = status.metrics ?? {};
   const request = status.jev?.request?.state;
-  const recommendation = status.jev?.response?.answers?.model_tier?.choice ?? status.tier ?? "unknown";
+  // The tier Jev's exact model belongs to, recorded by the proxy at decision time; a file
+  // written before that was kept still carries the exact model, so it is read from there.
+  const recommendation =
+    status.recommended ??
+    tierOf(status.jev?.response?.answers?.model?.choice) ??
+    status.tier ??
+    "unknown";
   return [
     `┌${"─".repeat(WIDTH)}┐`,
     row("Jev Router"),
