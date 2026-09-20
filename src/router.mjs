@@ -1,7 +1,7 @@
 import { TypeSafeClient } from "@typesafe-ai/sdk";
 import {
   COMPLEXITY_MAX_SCORE,
-  CONTEXT_WINDOW_TOKENS,
+  contextWindowOf,
   QUESTIONS,
   questionForModels,
   THRESHOLDS,
@@ -22,6 +22,18 @@ function getClient() {
   });
   return client;
 }
+
+/**
+ * How full the current model's context window is, as a fraction of it. The catalog's own
+ * limit for that exact model when the caller has it, since an older version within a tier
+ * can take less than the tier's current one; the tier's limit otherwise. A model outside
+ * the Claude tiers, as the Codex proxy sends, gets the smallest window, which is the 200K
+ * this metric was always measured against.
+ */
+export const contextSizeOf = (contextTokens, current, models = []) => {
+  const window = models.find((model) => model.id === current)?.contextWindow ?? contextWindowOf(current);
+  return Math.min(contextTokens / window, 1);
+};
 
 /**
  * Asks Jev which tier fits this prompt. Returns null on any failure, which the policy
@@ -53,7 +65,7 @@ export async function askJev({ prompt, current, contextTokens, models }) {
         taskComplexity: task_complexity.score / COMPLEXITY_MAX_SCORE,
         reasoningRequired: reasoning_required.score / COMPLEXITY_MAX_SCORE,
         toolComplexity: tool_complexity.score / COMPLEXITY_MAX_SCORE,
-        contextSize: Math.min(contextTokens / CONTEXT_WINDOW_TOKENS, 1),
+        contextSize: contextSizeOf(contextTokens, current, models),
       },
       ms: Date.now() - started,
     };

@@ -9,7 +9,9 @@ import {
   conversationKey,
   sessionOf,
   startProxy,
+  tokenEstimate,
 } from "../src/proxy.mjs";
+import { captureUpstream } from "./helpers.mjs";
 
 test("only the sentinel model is routed", () => {
   assert.equal(isAuto("jev-router"), true);
@@ -354,4 +356,63 @@ test("the same opening text in two sessions gets two keys", () => {
 test("the key survives metadata that is not JSON", () => {
   const body = { metadata: { user_id: "not-json" }, messages: [{ role: "user", content: "hi" }] };
   assert.doesNotThrow(() => conversationKey(body));
+});
+
+const post = (port, messages) =>
+  fetch(`http://127.0.0.1:${port}/v1/messages`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ model: "jev-router", tools: [{ name: "Bash" }], messages }),
+  });
+
+const imageBlock = (bytes) => ({
+  type: "image",
+  source: { type: "base64", media_type: "image/png", data: "A".repeat(bytes) },
+});
+
+test("a base64 image is budgeted at the API's ceiling, not at its byte length", () => {
+  const tokens = tokenEstimate({ messages: [{ role: "user", content: [imageBlock(4000000)] }] });
+  assert.ok(tokens > 1600 && tokens < 2000, `estimated ${tokens}`);
+  // A "data" field that is not a base64 source is ordinary text and counts as such.
+  const content = JSON.stringify({ data: "x".repeat(40000) });
+  const result = { type: "tool_result", tool_use_id: "t1", content };
+  assert.ok(tokenEstimate({ messages: [{ role: "user", content: [result] }] }) > 10000);
+});
+
+test("a base64 document is sized by its decoded bytes, not at the image ceiling", () => {
+  // The API reads a document's pages, so unlike an image it is not capped at one block.
+  // 400000 base64 characters decode to 300000 bytes: about 75000 tokens by the same
+  // bytes-over-four rule that sizes text.
+  const pdf = {
+    type: "document",
+    source: { type: "base64", media_type: "application/pdf", data: "A".repeat(400000) },
+  };
+  const tokens = tokenEstimate({ messages: [{ role: "user", content: [pdf] }] });
+  assert.ok(tokens > 74000 && tokens < 76000, `estimated ${tokens}`);
+  // But not past what the API's page limit can cost: a scanned 5 MB PDF is a few dozen
+  // pages, not the million-plus tokens its bytes would make of it.
+  const scanned = { ...pdf, source: { ...pdf.source, data: "A".repeat(6700000) } };
+  const capped = tokenEstimate({ messages: [{ role: "user", content: [scanned] }] });
+  assert.ok(capped > 300000 && capped < 301000, `estimated ${capped}`);
+});
+
+test("the context Jev is told about budgets a pasted image the way the API does", async (t) => {
+  const { url } = await captureUpstream(t);
+
+  let told;
+  const { port, close } = await startProxy({
+    upstreamURL: url,
+    route: async ({ contextTokens }) => {
+      told = contextTokens;
+      return { choice: "claude-sonnet-5", confidence: 0.9, ms: 1 };
+    },
+  });
+  t.after(close);
+
+  // By byte count this one screenshot is a million-token conversation, which would saturate
+  // Jev's context metric and hold every later downgrade for the cache-rebuild guard.
+  const text = { type: "text", text: `what is in this screenshot ${process.pid}` };
+  await post(port, [{ role: "user", content: [imageBlock(4000000), text] }]);
+
+  assert.ok(told > 1600 && told < 3000, `told ${told}`);
 });

@@ -109,10 +109,46 @@ export function claudeModels(catalog = []) {
         model.created_at && `released ${model.created_at.slice(0, 10)}`,
         model.max_input_tokens && `${model.max_input_tokens} input tokens`,
       ].filter(Boolean).join("; "),
+      // The catalog's own limit: an older version can take less than the tier's current one.
+      contextWindow: model.max_input_tokens ?? tierSpec(tierOf(model.id)).contextWindow,
     }));
   return models.length
     ? models
-    : TIERS.map((tier) => ({ id: tier.id, tier: tier.name, description: tier.id }));
+    : TIERS.map((tier) => ({
+        id: tier.id,
+        tier: tier.name,
+        description: tier.id,
+        contextWindow: tier.contextWindow,
+      }));
+}
+
+/** What a base64 image is budgeted at: the API's ceiling for a large image. */
+const IMAGE_BLOCK_TOKENS = 1600;
+
+/** The most a base64 document can cost: the API takes at most 100 pages, at a few thousand tokens each. */
+const DOCUMENT_CEILING_TOKENS = 300000;
+
+/**
+ * Rough size of `node` in tokens: bytes over four, the shipped messages estimate — except
+ * that a base64 source is budgeted the way the API reads it rather than by its byte length.
+ * An image counts at the ceiling the API scales it to, a document by its decoded bytes up
+ * to what its page limit can cost. By byte length one screenshot counts as a hundred times
+ * its real cost, saturating the context metric Jev is given and holding every later
+ * downgrade behind the cache-rebuild guard; a scanned PDF by its bytes would do the same.
+ */
+export function tokenEstimate(node) {
+  let binary = 0;
+  const text = JSON.stringify(node, function (key, value) {
+    if (key === "data" && this?.type === "base64" && typeof value === "string") {
+      // Base64 carries three bytes in four characters, so decoded bytes over four is 3/16.
+      binary += /^image\//.test(this.media_type)
+        ? IMAGE_BLOCK_TOKENS
+        : Math.min(Math.round((value.length * 3) / 16), DOCUMENT_CEILING_TOKENS);
+      return "";
+    }
+    return value;
+  });
+  return Math.round(text.length / 4) + binary;
 }
 
 const modelForTier = (models, tier) => models.find((model) => model.tier === tier)?.id ?? idOf(tier);
@@ -223,7 +259,7 @@ export async function startProxy({ upstreamURL = ANTHROPIC_BASE_URL, route = ask
               );
               const available = [...new Set(models.map((model) => model.tier))];
               const currentModel = state.model ?? modelForTier(models, current);
-              const contextTokens = Math.round(JSON.stringify(body.messages).length / 4);
+              const contextTokens = tokenEstimate(body.messages);
               const jev = await route({ prompt, current: currentModel, contextTokens, models });
               const chosen = models.find((model) => model.id === jev?.choice);
               const tierAnswer = jev && { ...jev, choice: chosen?.tier };

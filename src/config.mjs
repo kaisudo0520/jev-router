@@ -6,13 +6,15 @@ import { choice, score } from "@typesafe-ai/sdk";
  * substring used to recognise whatever model Claude Code asked for, which may be an older
  * version within the same tier such as `claude-sonnet-4-6`. The capability flags come from
  * the Agent SDK's model catalogue: Haiku supports neither adaptive thinking nor effort, so
- * those fields have to be stripped when routing down to it.
+ * those fields have to be stripped when routing down to it. `contextWindow` is the input
+ * limit the Models API reports as `max_input_tokens`: 1M for Sonnet 5, Opus 5 and Fable 5.1,
+ * while Haiku 4.5 is still 200K.
  */
 export const TIERS = [
-  { name: "haiku", id: "claude-haiku-4-5-20251001", family: "haiku", thinking: false, effort: false },
-  { name: "sonnet", id: "claude-sonnet-5", family: "sonnet", thinking: true, effort: true },
-  { name: "opus", id: "claude-opus-5", family: "opus", thinking: true, effort: true },
-  { name: "fable", id: "claude-fable-5-1", family: "fable", thinking: true, effort: true },
+  { name: "haiku", id: "claude-haiku-4-5-20251001", family: "haiku", thinking: false, effort: false, contextWindow: 200000 },
+  { name: "sonnet", id: "claude-sonnet-5", family: "sonnet", thinking: true, effort: true, contextWindow: 1000000 },
+  { name: "opus", id: "claude-opus-5", family: "opus", thinking: true, effort: true, contextWindow: 1000000 },
+  { name: "fable", id: "claude-fable-5-1", family: "fable", thinking: true, effort: true, contextWindow: 1000000 },
 ];
 
 export const TIER_NAMES = TIERS.map((t) => t.name);
@@ -37,6 +39,14 @@ export const isAuto = (model) => model === AUTO_MODEL;
 /** Tier name for a model string Claude Code sent, or null if we don't recognise it. */
 export const tierOf = (model) =>
   TIERS.find((t) => typeof model === "string" && model.includes(t.family))?.name ?? null;
+
+/**
+ * Context window of the tier a model string belongs to. A model we do not recognise gets
+ * the smallest window we run, so an unknown model is never reported as having more room
+ * than it might.
+ */
+export const contextWindowOf = (model) =>
+  tierSpec(tierOf(model))?.contextWindow ?? Math.min(...TIERS.map((t) => t.contextWindow));
 
 /**
  * Fable bills extra usage credits, so it is opt-in. Everything else is covered by a normal
@@ -65,8 +75,6 @@ export const THRESHOLDS = {
   jevDeadlineMs: 3000,
   jevMaxRetries: 1,
 };
-
-export const CONTEXT_WINDOW_TOKENS = 200000;
 
 const COMPLEXITY_SCALE = [
   "None",

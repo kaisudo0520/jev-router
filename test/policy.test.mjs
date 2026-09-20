@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { decide, detectOverride } from "../src/policy.mjs";
-import { QUESTIONS, shouldUseExactModel } from "../src/config.mjs";
+import { QUESTIONS, TIERS, contextWindowOf, shouldUseExactModel } from "../src/config.mjs";
 
 const ALL = ["haiku", "sonnet", "opus", "fable"];
 const sure = (choice) => ({ choice, confidence: 0.95 });
@@ -87,4 +87,14 @@ test("never substitutes upward into paid fable", () => {
 test("accepts exact model changes within the same tier", () => {
   assert.equal(shouldUseExactModel("jev/no-change", "opus", "opus"), true);
   assert.equal(shouldUseExactModel("low-confidence-no-downgrade/no-change", "opus", "opus"), false);
+});
+
+test("every tier records its context window", () => {
+  // Sonnet 5, Opus 5 and Fable 5.1 all take 1M input tokens; only Haiku 4.5 is still 200K.
+  for (const tier of TIERS) {
+    assert.equal(tier.contextWindow, tier.name === "haiku" ? 200000 : 1000000, tier.name);
+  }
+  assert.equal(contextWindowOf("claude-sonnet-5"), 1000000);
+  assert.equal(contextWindowOf("claude-haiku-4-5-20251001"), 200000);
+  assert.equal(contextWindowOf("gpt-5.6-luna"), 200000, "an unknown model gets the smallest");
 });
