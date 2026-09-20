@@ -63,7 +63,8 @@ export const THRESHOLDS = {
   /**
    * Switching models invalidates the prompt cache; the next turn re-sends the whole
    * conversation. Measured at ~23.6k cache-creation tokens switching into Opus, so a
-   * downgrade only pays off while the conversation is still small.
+   * downgrade only pays off while the conversation is still small. Default for
+   * `JEV_DOWNGRADE_CUTOFF_TOKENS`; see `downgradeCutoffTokens`.
    */
   downgradeMaxContextTokens: 20000,
   /**
@@ -74,6 +75,80 @@ export const THRESHOLDS = {
   jevTimeoutMs: 1500,
   jevDeadlineMs: 3000,
   jevMaxRetries: 1,
+};
+
+/**
+ * The tier `GUIDANCE` describes as "strong": what `JEV_STRONG_TIER` substitutes another tier
+ * for. Named apart from the policy default it happens to equal, because the two play
+ * different roles — this one is matched against Jev's answer, the default is what runs.
+ */
+export const GUIDANCE_STRONG_TIER = "opus";
+
+/** What `decide()` applies when the caller passes no policy: exactly the shipped behaviour. */
+export const DEFAULT_POLICY = Object.freeze({
+  strongTier: GUIDANCE_STRONG_TIER,
+  minAutoTier: null,
+  downgradeCutoffTokens: THRESHOLDS.downgradeMaxContextTokens,
+  tierShift: 0,
+});
+
+/**
+ * `policy` with every missing or unusable field replaced by its shipped default. Both
+ * `decide()` and `policyFromEnv` go through this, so neither a bad environment value nor a
+ * caller handing over a half-built object can switch a guard off: an unknown tier name, a
+ * negative or fractional shift, or a cutoff that is not a number all mean "as shipped".
+ */
+export const normalizePolicy = (policy) => {
+  const given = policy ?? {};
+  const tier = (name, fallback) => (TIER_NAMES.includes(name) ? name : fallback);
+  const { downgradeCutoffTokens: cutoff, tierShift: shift } = given;
+  return {
+    strongTier: tier(given.strongTier, DEFAULT_POLICY.strongTier),
+    minAutoTier: tier(given.minAutoTier, DEFAULT_POLICY.minAutoTier),
+    downgradeCutoffTokens:
+      typeof cutoff === "number" && Number.isFinite(cutoff) && cutoff >= 0
+        ? cutoff
+        : DEFAULT_POLICY.downgradeCutoffTokens,
+    tierShift:
+      Number.isInteger(shift) && shift >= 0 && shift < TIER_NAMES.length
+        ? shift
+        : DEFAULT_POLICY.tierShift,
+  };
+};
+
+/**
+ * The optional routing knobs, read from the environment.
+ *
+ * Built by the caller on each request rather than at module load, because the launcher loads
+ * its environment files after this module is first evaluated — but passed into `decide()`
+ * rather than read inside it, so the policy stays a pure function of its arguments and the
+ * Codex proxy keeps the shipped behaviour simply by not building one.
+ *
+ * Every field degrades to the shipped default when the variable is absent or unusable, so a
+ * typo can never disable a guard:
+ *
+ * - `JEV_STRONG_TIER` — tier to run the work the guidance calls "strong" on. Whether the
+ *   account can run it is settled in `decide()`, which knows what is available; a tier it
+ *   cannot run (an opt-in paid tier, say) is ignored rather than clamped on every turn.
+ * - `JEV_MIN_AUTO_TIER` — lowest tier automatic routing may land on. An explicit override in
+ *   the prompt still reaches any tier, because the human has already made that call. Ignored
+ *   in the same way when the account cannot run it.
+ * - `JEV_DOWNGRADE_CUTOFF_TOKENS` — context size at or below which an automatic downgrade is
+ *   still worth the cache rebuild. A larger value permits downgrades in longer conversations;
+ *   `0` turns automatic downgrades off entirely.
+ * - `JEV_TIER_SHIFT` — rungs to move every automatic choice up the ladder of tiers the
+ *   account can run, so the guidance's "trivial / ordinary / hard" split lands one tier
+ *   higher than written. Whole numbers below the ladder's height only; `0` is the default.
+ */
+export const policyFromEnv = () => {
+  const text = (key) => process.env[key]?.trim() || undefined;
+  const number = (key) => (text(key) === undefined ? undefined : Number(text(key)));
+  return normalizePolicy({
+    strongTier: text("JEV_STRONG_TIER")?.toLowerCase(),
+    minAutoTier: text("JEV_MIN_AUTO_TIER")?.toLowerCase(),
+    downgradeCutoffTokens: number("JEV_DOWNGRADE_CUTOFF_TOKENS"),
+    tierShift: number("JEV_TIER_SHIFT"),
+  });
 };
 
 const COMPLEXITY_SCALE = [

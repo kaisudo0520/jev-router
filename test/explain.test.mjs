@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { formatExplanation } from "../src/explain.mjs";
+import { POLICY_NOTES } from "../src/reason.mjs";
 
 test("formats the last routing decision", () => {
   const output = formatExplanation({
@@ -34,14 +35,16 @@ test("formats the last routing decision", () => {
 
 test("shows the tier Jev recommended even when policy ran something else", () => {
   const output = formatExplanation({
-    tier: "sonnet",
-    model: "claude-sonnet-5",
-    confidence: 0.2,
-    reason: "low-confidence-capped",
+    tier: "fable",
+    model: "claude-fable-5-1",
+    confidence: 0.8,
+    reason: "jev+strong",
     recommended: "opus",
   });
   assert.match(output, /Recommended tier: OPUS/);
-  assert.match(output, /Selected model: CLAUDE-SONNET-5/);
+  // The panel clips the last character of this id; the row is still unmistakable.
+  assert.match(output, /Selected model: CLAUDE-FABLE-5/);
+  assert.match(output, /Decision: strong tier swapped/);
   // The tier is recorded at decision time, so a Codex model id needs no mapping here.
   const codex = formatExplanation({
     tier: "sonnet",
@@ -63,6 +66,30 @@ test("a decision recorded before the recommended tier was kept still names Jev's
     jev: { response: { answers: { model: { choice: "claude-opus-5" } } } },
   });
   assert.match(older, /Recommended tier: OPUS/);
+});
+
+test("names a configured substitution instead of calling it a plain recommendation", () => {
+  // Without this the panel says "Jev recommendation" while its own recommended-tier row
+  // names a different tier from the one that ran, which is the divergence it exists to explain.
+  const decisionOf = (reason) => formatExplanation({ tier: "fable", confidence: 0.8, reason });
+  // Every label has to survive the panel, which clips a long line instead of wrapping it.
+  assert.match(decisionOf("jev+strong"), /Decision: strong tier swapped\s+│/);
+  assert.match(decisionOf("jev+floor"), /Decision: raised to floor\s+│/);
+  assert.match(decisionOf("jev+strong+floor/no-change"), /Decision: swapped, then floor\s+│/);
+  assert.match(decisionOf("jev+shift"), /Decision: tier shift applied\s+│/);
+  assert.match(decisionOf("jev+strong+shift+floor"), /Decision: tier shift applied\s+│/);
+  assert.match(
+    decisionOf("exceeds-window/no-change"),
+    /Decision: window too small\s+│/,
+  );
+  // Every note the policy can attach has a label of its own, so a new one cannot fall
+  // through to the plain-recommendation wording.
+  for (const note of POLICY_NOTES) {
+    assert.doesNotMatch(decisionOf(`jev+${note}`), /Jev recommendation/, note);
+  }
+  // The shipped "low confidence; capped" label is one character too wide for the panel and
+  // is already clipped; left alone here rather than reworded as a drive-by change.
+  assert.match(decisionOf("jev"), /Decision: Jev recommendation/);
 });
 
 test("shows the concrete provider model when available", () => {

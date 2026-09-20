@@ -194,8 +194,20 @@ One Jev call per fresh user turn selects a shared abstract tier:
 - failure, timeout, or an unrecognised Jev answer keeps the current model;
 - low confidence never downgrades and caps upgrades at the balanced tier;
 - large conversations refuse downgrades that would waste more prompt-cache work than they save;
+- a move to a model whose context window the whole request has outgrown is refused whichever
+  way it goes, and the turn stays on the current model;
 - unavailable tiers step upward rather than silently choosing a weaker model;
-- the long tier is disabled unless `JEV_ALLOW_FABLE=1`.
+- the long tier is disabled unless `JEV_ALLOW_FABLE=1`;
+- `JEV_STRONG_TIER` redirects the work the guidance calls strong to another tier,
+  `JEV_MIN_AUTO_TIER` sets a tier automatic routing will not land below, and
+  `JEV_TIER_SHIFT` moves every automatic choice up the ladder of enabled tiers, so that with
+  `JEV_TIER_SHIFT=1` and `JEV_ALLOW_FABLE=1` trivial work runs on Sonnet, ordinary coding on
+  Opus and hard work on Fable (without the opt-in, hard work stays on Opus).
+  `JEV_DOWNGRADE_CUTOFF_TOKENS` sets how large a conversation may grow before an automatic
+  downgrade stops being worth the cache rebuild. All four apply to Jev's own answer only — an
+  explicit request still reaches any tier, and a turn Jev could not judge stays on the shipped
+  baseline — and all four are read by `jev-claude` alone, so `jev-codex` keeps its shipped
+  behaviour.
 
 Tool-loop continuations keep the tier chosen at the start of the turn. Main conversations and
 sub-agents are pinned separately. Routing is fail-open: Jev failure never blocks the CLI.
@@ -209,6 +221,10 @@ sub-agents are pinned separately. Routing is fail-open: Jev failure never blocks
 | `JEV_DEBUG` | Both | Logs decisions and rewrites to `~/.jev-claude.log` in interactive sessions. |
 | `JEV_DUMP` | Both | Dumps request bodies for debugging wire-format changes. |
 | `JEV_NO_STATUSLINE` | Claude | Disables the injected Claude status line. |
+| `JEV_STRONG_TIER` | Claude | Tier to run strong work on; defaults to `opus`. A tier the account cannot run is ignored. |
+| `JEV_MIN_AUTO_TIER` | Claude | Lowest tier automatic routing may land on; unset means no floor. A tier the account cannot run is ignored. |
+| `JEV_DOWNGRADE_CUTOFF_TOKENS` | Claude | Context size at or below which an automatic downgrade is worth the cache rebuild; defaults to `20000`, and `0` turns automatic downgrades off once a session has a cache to lose (its first decision may still downgrade). |
+| `JEV_TIER_SHIFT` | Claude | Rungs to move every automatic choice up the ladder of enabled tiers, stopping at the top; defaults to `0`. |
 | `JEV_CODEX_FAST_MODEL` | Codex | Fast model; defaults to `gpt-5.6-luna`. |
 | `JEV_CODEX_BALANCED_MODEL` | Codex | Balanced model; defaults to `gpt-5.6-terra`. |
 | `JEV_CODEX_STRONG_MODEL` | Codex | Strong model; defaults to `gpt-5.6-sol`. |

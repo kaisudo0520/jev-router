@@ -2,6 +2,7 @@
 // Status line for Claude Code. Claude Code pipes session JSON on stdin and renders whatever
 // this prints. See https://code.claude.com/docs/en/statusline
 import { readStatus } from "../src/status.mjs";
+import { routedNormally } from "../src/reason.mjs";
 
 const DIM = "\x1b[2m";
 const RESET = "\x1b[0m";
@@ -32,10 +33,7 @@ if (status?.manual) {
   // Only name the reason when routing declined to do the obvious thing, so the common case
   // stays short and the interesting case explains itself.
   const held =
-    status.reason &&
-    status.reason !== "jev" &&
-    status.reason !== "jev/no-change" &&
-    !status.reason.includes("override");
+    status.reason && !routedNormally(status.reason) && !status.reason.includes("override");
   const why = held ? ` ${DIM}(${status.reason.split("/")[0]})${RESET}` : "";
   routed = `${color}${status.model ?? status.tier}${RESET}${p}${why}`;
 }

@@ -11,7 +11,7 @@ import {
   startProxy,
   tokenEstimate,
 } from "../src/proxy.mjs";
-import { captureUpstream } from "./helpers.mjs";
+import { setEnv, captureUpstream } from "./helpers.mjs";
 
 test("only the sentinel model is routed", () => {
   assert.equal(isAuto("jev-router"), true);
@@ -358,6 +358,14 @@ test("the key survives metadata that is not JSON", () => {
   assert.doesNotThrow(() => conversationKey(body));
 });
 
+/** Every routing knob unset, so a developer's own environment cannot steer these tests. */
+const KNOBS_UNSET = {
+  JEV_STRONG_TIER: undefined,
+  JEV_MIN_AUTO_TIER: undefined,
+  JEV_DOWNGRADE_CUTOFF_TOKENS: undefined,
+  JEV_TIER_SHIFT: undefined,
+};
+
 const post = (port, messages) =>
   fetch(`http://127.0.0.1:${port}/v1/messages`, {
     method: "POST",
@@ -368,6 +376,88 @@ const post = (port, messages) =>
 const imageBlock = (bytes) => ({
   type: "image",
   source: { type: "base64", media_type: "image/png", data: "A".repeat(bytes) },
+});
+
+test("a first turn Jev cannot judge lands on the shipped baseline, not the configured tier", async (t) => {
+  const { seen, url } = await captureUpstream(t);
+  setEnv(t, { ...KNOBS_UNSET, JEV_STRONG_TIER: "fable", JEV_ALLOW_FABLE: "1" });
+
+  const { port, close } = await startProxy({
+    upstreamURL: url,
+    // Jev unreachable, so the decision falls back to whatever the session's baseline is.
+    route: async () => null,
+  });
+  t.after(close);
+
+  await post(port, [{ role: "user", content: `unjudged first turn ${process.pid}` }]);
+
+  // Fable bills extra: with no signal from Jev there is no reason to start a session there.
+  assert.equal(seen[0].model, "claude-opus-5");
+});
+
+test("the guards never hold a first turn on a configured tier nothing is cached on", async (t) => {
+  const { seen, url } = await captureUpstream(t);
+  setEnv(t, { ...KNOBS_UNSET, JEV_STRONG_TIER: "fable", JEV_ALLOW_FABLE: "1" });
+
+  const { port, close } = await startProxy({
+    upstreamURL: url,
+    route: async () => ({ choice: "claude-sonnet-5", confidence: 0.9, ms: 1 }),
+  });
+  t.after(close);
+
+  // A large first paste, past the downgrade cutoff, so the cache-rebuild guard holds the
+  // baseline. Measured against the configured tier that would pin the session to Fable
+  // although nothing has been cached there yet.
+  await post(port, [{ role: "user", content: `${"x".repeat(200000)} ${process.pid}` }]);
+
+  assert.equal(seen[0].model, "claude-opus-5");
+});
+
+test("a downgrade is sized against the whole request, not the messages alone", async (t) => {
+  const { seen, url } = await captureUpstream(t);
+  setEnv(t, { ...KNOBS_UNSET, JEV_DOWNGRADE_CUTOFF_TOKENS: "1000000" });
+
+  const { port, close } = await startProxy({
+    upstreamURL: url,
+    route: async () => ({ choice: "claude-haiku-4-5-20251001", confidence: 0.9, ms: 1 }),
+  });
+  t.after(close);
+
+  // The messages alone fit Haiku's 200K window; with the tool schemas Claude Code sends
+  // alongside them the request does not, and the API would reject it outright.
+  await fetch(`http://127.0.0.1:${port}/v1/messages`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      model: "jev-router",
+      tools: [{ name: "Bash", description: "y".repeat(700000) }],
+      messages: [{ role: "user", content: `${"x".repeat(160000)} ${process.pid}` }],
+    }),
+  });
+
+  assert.equal(seen[0].model, "claude-opus-5", "held rather than sent where it cannot fit");
+});
+
+test("a downgrade is sized against the window of the exact model Jev chose", async (t) => {
+  const { seen, url } = await captureUpstream(t, {
+    catalog: [
+      { id: "claude-opus-5", display_name: "Claude Opus 5", max_input_tokens: 1000000 },
+      { id: "claude-sonnet-4-5", display_name: "Claude Sonnet 4.5", max_input_tokens: 200000 },
+    ],
+  });
+  setEnv(t, { ...KNOBS_UNSET, JEV_DOWNGRADE_CUTOFF_TOKENS: "1000000" });
+
+  const { port, close } = await startProxy({
+    upstreamURL: url,
+    route: async () => ({ choice: "claude-sonnet-4-5", confidence: 0.9, ms: 1 }),
+  });
+  t.after(close);
+
+  await fetch(`http://127.0.0.1:${port}/v1/models`).then((response) => response.json());
+  // Every current Sonnet takes 1M tokens; the version Jev picked from the catalog takes 200K.
+  await post(port, [{ role: "user", content: `${"x".repeat(900000)} ${process.pid}` }]);
+
+  assert.equal(seen[0].model, "claude-opus-5");
 });
 
 test("a base64 image is budgeted at the API's ceiling, not at its byte length", () => {
@@ -398,6 +488,7 @@ test("a base64 document is sized by its decoded bytes, not at the image ceiling"
 
 test("the context Jev is told about budgets a pasted image the way the API does", async (t) => {
   const { url } = await captureUpstream(t);
+  setEnv(t, KNOBS_UNSET);
 
   let told;
   const { port, close } = await startProxy({
@@ -415,4 +506,90 @@ test("the context Jev is told about budgets a pasted image the way the API does"
   await post(port, [{ role: "user", content: [imageBlock(4000000), text] }]);
 
   assert.ok(told > 1600 && told < 3000, `told ${told}`);
+});
+
+test("a tier reached by policy runs its newest entry, so that is the window checked", async (t) => {
+  const { seen, url } = await captureUpstream(t, {
+    catalog: [
+      { id: "claude-opus-5", display_name: "Claude Opus 5", max_input_tokens: 1000000 },
+      { id: "claude-sonnet-5", display_name: "Claude Sonnet 5", max_input_tokens: 1000000 },
+      { id: "claude-sonnet-4-5", display_name: "Claude Sonnet 4.5", max_input_tokens: 200000 },
+      { id: "claude-haiku-4-5-20251001", display_name: "Claude Haiku 4.5", max_input_tokens: 200000 },
+    ],
+  });
+  setEnv(t, { ...KNOBS_UNSET, JEV_TIER_SHIFT: "1", JEV_DOWNGRADE_CUTOFF_TOKENS: "1000000" });
+
+  const { port, close } = await startProxy({
+    upstreamURL: url,
+    route: async () => ({ choice: "claude-haiku-4-5-20251001", confidence: 0.9, ms: 1 }),
+  });
+  t.after(close);
+
+  await fetch(`http://127.0.0.1:${port}/v1/models`).then((response) => response.json());
+  // Jev's 200K pick is shifted to sonnet, whose newest entry takes 1M: the request that
+  // would not have fitted the pick fits what actually goes out.
+  await post(port, [{ role: "user", content: `rename everything ${"x".repeat(900000)} ${process.pid}` }]);
+
+  assert.equal(seen[0].model, "claude-sonnet-5");
+});
+
+test("pasted images do not freeze routing on the current tier", async (t) => {
+  const { seen, url } = await captureUpstream(t);
+  setEnv(t, { ...KNOBS_UNSET, JEV_ALLOW_FABLE: "1" });
+
+  const { port, close } = await startProxy({
+    upstreamURL: url,
+    route: async () => ({ choice: "claude-fable-5-1", confidence: 0.9, ms: 1 }),
+  });
+  t.after(close);
+
+  // Five megabytes of base64 is over a million "tokens" by byte count and a few thousand
+  // real ones; sized by bytes, no tier would have room and the upgrade would be refused.
+  const text = { type: "text", text: `plan the migration ${process.pid}` };
+  await post(port, [{ role: "user", content: [imageBlock(5000000), text] }]);
+
+  assert.equal(seen[0].model, "claude-fable-5-1");
+});
+
+test("a zero cutoff lets the first decision downgrade and holds every later one", async (t) => {
+  const { seen, url } = await captureUpstream(t);
+  setEnv(t, { ...KNOBS_UNSET, JEV_DOWNGRADE_CUTOFF_TOKENS: "0" });
+
+  const answers = ["claude-sonnet-5", "claude-haiku-4-5-20251001"];
+  const { port, close } = await startProxy({
+    upstreamURL: url,
+    route: async () => ({ choice: answers.shift(), confidence: 0.9, ms: 1 }),
+  });
+  t.after(close);
+
+  const opening = { role: "user", content: `rename this variable ${process.pid}` };
+  await post(port, [opening]);
+  const reply = { role: "assistant", content: "done" };
+  await post(port, [opening, reply, { role: "user", content: "and this one" }]);
+
+  assert.equal(seen[0].model, "claude-sonnet-5", "no cache yet, so the baseline is not defended");
+  assert.equal(seen[1].model, "claude-sonnet-5", "now there is one, and it is");
+});
+
+test("a configured tier the account cannot run never reaches a request", async (t) => {
+  const { seen, url } = await captureUpstream(t);
+  // The opt-in paid tier is explicitly NOT enabled.
+  setEnv(t, { ...KNOBS_UNSET, JEV_STRONG_TIER: "fable", JEV_ALLOW_FABLE: undefined });
+
+  const { port, close } = await startProxy({
+    upstreamURL: url,
+    route: async () => {
+      throw new Error("a tool continuation carries no new prompt, so routing must not run");
+    },
+  });
+  t.after(close);
+
+  // A tool_result continuation: `newTurnPrompt` returns null, so `decide()` — and with it the
+  // `available` clamp — never runs. The baseline is the only thing standing between the
+  // configured tier and the wire.
+  await post(port, [
+    { role: "user", content: [{ type: "tool_result", tool_use_id: "t1", content: "ok" }] },
+  ]);
+
+  assert.equal(seen[0].model, "claude-opus-5", "must fall back to the shipped strong tier, not Fable");
 });

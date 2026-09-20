@@ -4,12 +4,14 @@ import { createHash } from "node:crypto";
 import { writeFileSync } from "node:fs";
 import {
   TIERS,
+  GUIDANCE_STRONG_TIER,
   tierOf,
   idOf,
   availableTiers,
   tierSpec,
   isAuto,
   shouldUseExactModel,
+  policyFromEnv,
 } from "./config.mjs";
 import { askJev } from "./router.mjs";
 import { decide } from "./policy.mjs";
@@ -122,6 +124,8 @@ export function claudeModels(catalog = []) {
       }));
 }
 
+const modelFor = (models, tier) => models.find((model) => model.tier === tier);
+
 /** What a base64 image is budgeted at: the API's ceiling for a large image. */
 const IMAGE_BLOCK_TOKENS = 1600;
 
@@ -133,8 +137,9 @@ const DOCUMENT_CEILING_TOKENS = 300000;
  * that a base64 source is budgeted the way the API reads it rather than by its byte length.
  * An image counts at the ceiling the API scales it to, a document by its decoded bytes up
  * to what its page limit can cost. By byte length one screenshot counts as a hundred times
- * its real cost, saturating the context metric Jev is given and holding every later
- * downgrade behind the cache-rebuild guard; a scanned PDF by its bytes would do the same.
+ * its real cost, saturating the context metric Jev is given and, past the largest window,
+ * having the window guard refuse every model for the rest of the session; a scanned PDF by
+ * its bytes would do the same.
  */
 export function tokenEstimate(node) {
   let binary = 0;
@@ -151,7 +156,7 @@ export function tokenEstimate(node) {
   return Math.round(text.length / 4) + binary;
 }
 
-const modelForTier = (models, tier) => models.find((model) => model.tier === tier)?.id ?? idOf(tier);
+const modelForTier = (models, tier) => modelFor(models, tier)?.id ?? idOf(tier);
 
 /**
  * Identifies the conversation a request belongs to. Claude Code runs sub-agents through the
@@ -249,26 +254,47 @@ export async function startProxy({ upstreamURL = ANTHROPIC_BASE_URL, route = ask
             const key = conversationKey(body);
             const state = stateFor(key);
             // What the prompt cache was built on, which is what a downgrade would discard.
-            const current = state.tier ?? "opus";
+            // Before the first decision there is no cache, so the baseline is the shipped
+            // strong tier — never a configured substitute. A paid tier is entered only on
+            // Jev's say-so; a baseline there would let the cache-rebuild and low-confidence
+            // guards hold a session on it before it had cached anything.
+            const current = state.tier ?? GUIDANCE_STRONG_TIER;
             const prompt = newTurnPrompt(body);
             const explaining = prompt?.includes("<jev-explain>");
             let fresh = null;
             if (prompt && !explaining) {
+              // Read per request: the launcher loads its environment files after this module
+              // is first evaluated. Only a fresh turn has a use for it.
+              const policy = policyFromEnv();
               const models = claudeModels([...catalog.values()]).filter((model) =>
                 availableTiers().includes(model.tier),
               );
               const available = [...new Set(models.map((model) => model.tier))];
               const currentModel = state.model ?? modelForTier(models, current);
               const contextTokens = tokenEstimate(body.messages);
+              // The system prompt and tool schemas go to the API too, so the whole request
+              // is what a smaller tier's context window has to hold. Measured as the rest
+              // of the body on top of the messages, which are wanted on their own anyway,
+              // rather than as a second pass over the whole thing.
+              const requestTokens = contextTokens + tokenEstimate({ ...body, messages: undefined });
               const jev = await route({ prompt, current: currentModel, contextTokens, models });
               const chosen = models.find((model) => model.id === jev?.choice);
               const tierAnswer = jev && { ...jev, choice: chosen?.tier };
+              // A tier runs its newest catalog entry unless policy accepts Jev's exact
+              // choice, so both windows go in and `decide()` checks whichever would be sent.
               const { tier, reason } = decide({
                 prompt,
                 jev: tierAnswer,
                 current,
                 available,
                 contextTokens,
+                requestTokens,
+                windows: Object.fromEntries(
+                  available.map((tier) => [tier, modelFor(models, tier).contextWindow]),
+                ),
+                exactWindow: chosen?.contextWindow,
+                cached: state.tier != null,
+                policy,
               });
               const model =
                 shouldUseExactModel(reason, chosen?.tier, tier)

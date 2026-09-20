@@ -1,4 +1,5 @@
 import { tierOf } from "./config.mjs";
+import { policyNotesOf } from "./reason.mjs";
 
 const WIDTH = 33;
 const row = (text = "") => `│ ${text.slice(0, WIDTH - 2).padEnd(WIDTH - 2)} │`;
@@ -13,13 +14,30 @@ const wrapped = (label, value) => {
   return lines.map(row);
 };
 
+/** One label per policy note, each within the panel width, which clips rather than wraps. */
+const NOTE_LABELS = {
+  strong: "strong tier swapped",
+  shift: "tier shift applied",
+  floor: "raised to floor",
+};
+
 const decision = (reason = "") => {
   if (reason.includes("override")) return "prompt override";
   if (reason.includes("jev-unavailable")) return "Jev unavailable; held";
   if (reason.includes("low-confidence-no-downgrade")) return "low confidence; held";
   if (reason.includes("low-confidence-capped")) return "low confidence; capped";
   if (reason.includes("cache-rebuild")) return "cache rebuild avoided";
+  if (reason.includes("exceeds-window")) return "window too small";
   if (reason.includes("unavailable")) return "nearest available tier";
+  // Configured substitutions. Without these the panel reports a plain recommendation while
+  // its own "recommended tier" row names a different tier from the one that ran. The notes
+  // come from the policy's own vocabulary, so a note added there cannot fall through to the
+  // plain wording here. A shift relabels the whole ladder, so it is the one thing worth
+  // naming whenever it moved the tier.
+  const notes = policyNotesOf(reason);
+  if (notes.includes("shift")) return NOTE_LABELS.shift;
+  if (notes.includes("strong") && notes.includes("floor")) return "swapped, then floor";
+  if (notes.length) return NOTE_LABELS[notes[0]];
   return "Jev recommendation";
 };
 
