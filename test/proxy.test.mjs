@@ -1,6 +1,5 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import http from "node:http";
 import {
   sanitizeSchema,
   newTurnPrompt,
@@ -97,31 +96,16 @@ test("keeps available Claude model versions as separate Jev choices", () => {
 });
 
 test("Claude proxy sends exact account models to Jev and routes the chosen version", async (t) => {
-  const seen = [];
-  const upstream = http.createServer((req, res) => {
-    const chunks = [];
-    req.on("data", (chunk) => chunks.push(chunk));
-    req.on("end", () => {
-      if (req.url.startsWith("/v1/models")) {
-        res.setHeader("content-type", "application/json");
-        return res.end(JSON.stringify({
-          data: [
-            { id: "claude-opus-5", display_name: "Claude Opus 5" },
-            { id: "claude-opus-4-8", display_name: "Claude Opus 4.8" },
-            { id: "claude-sonnet-5", display_name: "Claude Sonnet 5" },
-          ],
-        }));
-      }
-      seen.push(JSON.parse(Buffer.concat(chunks)));
-      res.setHeader("content-type", "application/json");
-      res.end('{"id":"msg_1","type":"message","model":"claude-opus-4-8"}');
-    });
+  const { seen, url } = await captureUpstream(t, {
+    catalog: [
+      { id: "claude-opus-5", display_name: "Claude Opus 5" },
+      { id: "claude-opus-4-8", display_name: "Claude Opus 4.8" },
+      { id: "claude-sonnet-5", display_name: "Claude Sonnet 5" },
+    ],
   });
-  await new Promise((resolve) => upstream.listen(0, "127.0.0.1", resolve));
-  t.after(() => upstream.close());
 
   const { port, close } = await startProxy({
-    upstreamURL: `http://127.0.0.1:${upstream.address().port}`,
+    upstreamURL: url,
     route: async ({ models }) => {
       assert.deepEqual(models.map((model) => model.id), [
         "claude-opus-5",
@@ -148,18 +132,10 @@ test("Claude proxy sends exact account models to Jev and routes the chosen versi
 });
 
 test("a routed request without metadata is recorded under the conversation key", async (t) => {
-  const upstream = http.createServer((req, res) => {
-    req.on("data", () => {});
-    req.on("end", () => {
-      res.setHeader("content-type", "application/json");
-      res.end('{"id":"msg_1","type":"message","model":"claude-sonnet-5"}');
-    });
-  });
-  await new Promise((resolve) => upstream.listen(0, "127.0.0.1", resolve));
-  t.after(() => upstream.close());
+  const { url } = await captureUpstream(t);
 
   const { port, close } = await startProxy({
-    upstreamURL: `http://127.0.0.1:${upstream.address().port}`,
+    upstreamURL: url,
     route: async () => ({ choice: "claude-sonnet-5", confidence: 0.77, ms: 1 }),
   });
   t.after(close);
