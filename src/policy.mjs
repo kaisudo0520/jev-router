@@ -44,12 +44,13 @@ function clampToAvailable(tier, available) {
  * @param {number} [input.requestTokens] approximate size of the whole request, when the caller
  *                                     measured it; the conversation size otherwise
  * @param {Object<string, number>} [input.windows] context window per tier of the model the
- *                                     caller would send for that tier. A tier with no entry
- *                                     is not checked, which is how the Codex proxy, whose
- *                                     models are not Claude's tiers, keeps the shipped
+ *                                     caller would send on a change of tier. A tier with no
+ *                                     entry is not checked, which is how the Codex proxy,
+ *                                     whose models are not Claude's tiers, keeps the shipped
  *                                     behaviour
- * @param {number} [input.exactWindow] context window of the exact model Jev chose, checked
- *                                     in place of the tier's when that is what would be sent
+ * @param {number} [input.exactWindow] context window of the exact model Jev chose, when that
+ *                                     is not the model already in use; checked in place of
+ *                                     the tier's when the outcome sends that choice
  * @param {boolean} [input.cached]     whether a prompt cache exists to lose; false before a
  *                                     session's first decision
  * @param {object} [input.policy]      optional knobs; see `policyFromEnv`. Omitting it, as the
@@ -175,13 +176,17 @@ export function decide({
   // much as for a downgrade. Only an outcome that puts a new model on the wire is checked,
   // and which model that is follows the same rule the proxy uses to pick it: Jev's exact
   // choice when policy accepted it, the tier's own model otherwise; a hold keeps the current
-  // one. Reachable under the shipped cutoff too, since the cutoff gates the messages while
-  // this gates the whole request: upstream would send such a request and have the API
-  // reject it, the one place the shipped behaviour is deliberately not reproduced. An
-  // explicit override returned above and is not checked: that is the user's own call.
+  // one. Jev's exact choice may be the model already running, which is no move at all;
+  // only the caller knows the model ids, so it withholds `exactWindow` in that case and the
+  // outcome goes unchecked rather than being reported as held. Reachable under the shipped
+  // cutoff too, since the cutoff gates the messages while this gates the whole request:
+  // upstream would send such a request and have the API reject it, the one place the
+  // shipped behaviour is deliberately not reproduced. An explicit override returned above
+  // and is not checked: that is the user's own call.
   const exact = shouldUseExactModel(outcome.reason, jev?.choice, outcome.tier);
-  const window = (exact ? exactWindow : undefined) ?? windows[outcome.tier];
-  if ((exact || outcome.tier !== current) && window !== undefined && requestTokens > window) {
+  const moved = outcome.tier !== current;
+  const window = (exact ? exactWindow : undefined) ?? (moved ? windows[outcome.tier] : undefined);
+  if (window !== undefined && requestTokens > window) {
     return settle(current, "exceeds-window");
   }
   return outcome;

@@ -135,7 +135,9 @@ export const normalizePolicy = (policy) => {
  *   in the same way when the account cannot run it.
  * - `JEV_DOWNGRADE_CUTOFF_TOKENS` — context size at or below which an automatic downgrade is
  *   still worth the cache rebuild. A larger value permits downgrades in longer conversations;
- *   `0` turns automatic downgrades off entirely.
+ *   `0` turns them off once the session has a cache to lose. Its first decision in a proxy
+ *   process may still downgrade, so a proxy restarted mid-conversation does not defend the
+ *   cache the API still holds for it.
  * - `JEV_TIER_SHIFT` — rungs to move every automatic choice up the ladder of tiers the
  *   account can run, so the guidance's "trivial / ordinary / hard" split lands one tier
  *   higher than written. Whole numbers below the ladder's height only; `0` is the default.

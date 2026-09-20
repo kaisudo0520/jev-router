@@ -223,7 +223,7 @@ sub-agents are pinned separately. Routing is fail-open: Jev failure never blocks
 | `JEV_NO_STATUSLINE` | Claude | Disables the injected Claude status line. |
 | `JEV_STRONG_TIER` | Claude | Tier to run strong work on; defaults to `opus`. A tier the account cannot run is ignored. |
 | `JEV_MIN_AUTO_TIER` | Claude | Lowest tier automatic routing may land on; unset means no floor. A tier the account cannot run is ignored. |
-| `JEV_DOWNGRADE_CUTOFF_TOKENS` | Claude | Context size at or below which an automatic downgrade is worth the cache rebuild; defaults to `20000`, and `0` turns automatic downgrades off once a session has a cache to lose (its first decision may still downgrade). |
+| `JEV_DOWNGRADE_CUTOFF_TOKENS` | Claude | Context size at or below which an automatic downgrade is worth the cache rebuild; defaults to `20000`, and `0` turns automatic downgrades off once a session has a cache to lose (its first decision in a proxy process may still downgrade, so a proxy restarted mid-conversation does not defend the cache the API still holds). |
 | `JEV_TIER_SHIFT` | Claude | Rungs to move every automatic choice up the ladder of enabled tiers, stopping at the top; defaults to `0`. |
 | `JEV_CODEX_FAST_MODEL` | Codex | Fast model; defaults to `gpt-5.6-luna`. |
 | `JEV_CODEX_BALANCED_MODEL` | Codex | Balanced model; defaults to `gpt-5.6-terra`. |

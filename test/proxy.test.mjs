@@ -436,6 +436,36 @@ test("a downgrade is sized against the window of the exact model Jev chose", asy
   assert.equal(seen[0].model, "claude-opus-5");
 });
 
+test("Jev picking the model already running is not reported as a refused switch", async (t) => {
+  const { seen, url } = await captureUpstream(t, {
+    catalog: [
+      { id: "claude-opus-4-8", display_name: "Claude Opus 4.8", max_input_tokens: 200000 },
+      { id: "claude-sonnet-5", display_name: "Claude Sonnet 5", max_input_tokens: 1000000 },
+    ],
+  });
+  setEnv(t, KNOBS_UNSET);
+
+  const { port, close } = await startProxy({
+    upstreamURL: url,
+    route: async () => ({ choice: "claude-opus-4-8", confidence: 0.9, ms: 1 }),
+  });
+  t.after(close);
+
+  await fetch(`http://127.0.0.1:${port}/v1/models`).then((response) => response.json());
+  // The session's opus model is the 200K entry; Jev picks it again for a request it cannot
+  // hold. Nothing is switched, so nothing is reported as held: the API's refusal is the
+  // same either way.
+  const body = { model: "jev-router", tools: [{ name: "Bash" }], messages: [{ role: "user", content: `keep going ${"x".repeat(900000)} ${process.pid}` }] };
+  await fetch(`http://127.0.0.1:${port}/v1/messages`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+
+  assert.equal(seen[0].model, "claude-opus-4-8");
+  assert.equal(readStatus(conversationKey(body)).reason, "jev/no-change");
+});
+
 test("a base64 image is budgeted at the API's ceiling, not at its byte length", () => {
   const tokens = tokenEstimate({ messages: [{ role: "user", content: [imageBlock(4000000)] }] });
   assert.ok(tokens > 1600 && tokens < 2000, `estimated ${tokens}`);

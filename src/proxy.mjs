@@ -282,6 +282,8 @@ export async function startProxy({ upstreamURL = ANTHROPIC_BASE_URL, route = ask
               const tierAnswer = jev && { ...jev, choice: chosen?.tier };
               // A tier runs its newest catalog entry unless policy accepts Jev's exact
               // choice, so both windows go in and `decide()` checks whichever would be sent.
+              // An exact choice that is the model already running is not a move, so its
+              // window is withheld: a request that model cannot hold fails the same either way.
               const { tier, reason } = decide({
                 prompt,
                 jev: tierAnswer,
@@ -292,7 +294,7 @@ export async function startProxy({ upstreamURL = ANTHROPIC_BASE_URL, route = ask
                 windows: Object.fromEntries(
                   available.map((tier) => [tier, modelFor(models, tier).contextWindow]),
                 ),
-                exactWindow: chosen?.contextWindow,
+                exactWindow: chosen && chosen.id !== currentModel ? chosen.contextWindow : undefined,
                 cached: state.tier != null,
                 policy,
               });

@@ -403,8 +403,23 @@ test("the window guard uses the window of the model that would actually run", ()
   assert.match(decide({ ...input, windows, exactWindow: 200000 }).reason, /exceeds-window/);
   assert.equal(decide({ ...input, windows, exactWindow: 1000000 }).tier, "sonnet");
   const tierOnly = decide({ ...input, windows: { sonnet: 200000 } });
-  assert.match(tierOnly.reason, /exceeds-window/, "without an exact window the tier's stands in");
+  assert.match(tierOnly.reason, /exceeds-window/, "on a change of tier the tier's window stands in");
   assert.equal(decide(input).tier, "sonnet", "unmeasured, nothing is refused");
+});
+
+test("an exact choice that is the model already running is not a move", () => {
+  // The caller withholds the exact window when Jev picked the model in use; the tier's own
+  // window must not stand in, or a request that model cannot hold would be reported as a
+  // refused switch when nothing was switched.
+  const out = decide({
+    ...base,
+    current: "opus",
+    jev: sure("opus"),
+    requestTokens: 500000,
+    windows: { opus: 200000 },
+    policy: { downgradeCutoffTokens: 1000000 },
+  });
+  assert.deepEqual(out, { tier: "opus", reason: "jev/no-change", changed: false });
 });
 
 test("a tier reached by policy rather than by Jev's exact choice is sized by its own model", () => {
