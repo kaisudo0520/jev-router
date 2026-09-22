@@ -126,20 +126,64 @@ export function claudeModels(catalog = []) {
 
 const modelFor = (models, tier) => models.find((model) => model.tier === tier);
 
-/** What a base64 image is budgeted at: the API's ceiling for a large image. */
-const IMAGE_BLOCK_TOKENS = 1600;
-
-/** The most a base64 document can cost: the API takes at most 100 pages, at a few thousand tokens each. */
-const DOCUMENT_CEILING_TOKENS = 300000;
+/**
+ * What a base64 image is budgeted at: the ceiling for the higher of the two resolution tiers
+ * the API scales an image to, which every tier here but Haiku is on (Claude 4.7 and later).
+ * The lower, 1568-token ceiling standard-tier models are held to would under-count for them,
+ * letting a request past the guard that the API would still reject as too large.
+ * https://platform.claude.com/docs/en/build-with-claude/vision#resolution-and-token-cost
+ */
+const IMAGE_BLOCK_TOKENS = 4784;
 
 /**
- * Rough size of `node` in tokens: bytes over four, the shipped messages estimate — except
- * that a base64 source is budgeted the way the API reads it rather than by its byte length.
- * An image counts at the ceiling the API scales it to, a document by its decoded bytes up
- * to what its page limit can cost. By byte length one screenshot counts as a hundred times
- * its real cost, saturating the context metric Jev is given and, past the largest window,
- * having the window guard refuse every model for the rest of the session; a scanned PDF by
- * its bytes would do the same.
+ * A bound on the byte-length estimate below, not a measurement of what a document costs — and
+ * deliberately kept under the smallest context window this proxy ever checks, with margin left
+ * for the rest of the request. A page-based bound (extracted text plus an image-scaled cost,
+ * over the API's 600-page ceiling for a 1M-context request) comes out well above every tier's
+ * window, which would let one large enough document alone hold the window guard shut for every
+ * tier, the same failure mode the per-image ceiling above exists to avoid. Held here instead,
+ * a maximally-capped document can never by itself be reported as too big for every tier — at
+ * the cost of not reflecting how many pages, or how dense, a document actually is.
+ * https://platform.claude.com/docs/en/build-with-claude/pdf-support#check-pdf-requirements
+ */
+const DOCUMENT_CEILING_TOKENS = Math.min(...TIERS.map((tier) => tier.contextWindow)) - 10000;
+
+/**
+ * Scripts that length over four under-counts badly enough to be worth charging separately, plus
+ * the CJK punctuation and fullwidth forms that ride along with them (`\u3000-\u303F`, ideographic
+ * punctuation such as 、。「」; `\uFF00-\uFFEF`, fullwidth Latin/digits and fullwidth punctuation
+ * such as ，！？（）) — `Script_Extensions` alone does not cover the punctuation blocks, and CJK
+ * prose runs 5-10% punctuation, dense enough on its own to be worth not under-counting. Four
+ * characters to a token suits English prose; these run nearer one token per character (a floor,
+ * not a ceiling — some, Hangul syllable blocks especially, commonly cost more), so a
+ * conversation held in them would otherwise be estimated at about a quarter of its real size —
+ * and under-counting is what defeats the window guard, since the request goes out as if it fit.
+ * Every other script keeps the shipped rule, whether or not it is Latin.
+ */
+const DENSE_SCRIPT =
+  /[\p{Script_Extensions=Han}\p{Script_Extensions=Hiragana}\p{Script_Extensions=Katakana}\p{Script_Extensions=Hangul}\u3000-\u303F\uFF00-\uFFEF]/gu;
+
+/**
+ * Rough size of `node` in tokens: length over four, the shipped estimate — except that dense
+ * scripts are charged a token each, and that a base64 source is priced conservatively rather
+ * than by its encoded length. The two kinds of source keep that promise differently: an image
+ * counts at the API's published high-resolution ceiling regardless of what its own size
+ * actually costs, which is a real upper bound, while a document counts by its decoded bytes
+ * under the bound above, a heuristic sized to stay clear of a plausible request rather than a
+ * guarantee — a dense one can still exceed it. A small image can be over-counted by a wide
+ * margin this way, but it is under-counting, not over-counting, that defeats the guard: by
+ * encoded length one screenshot counts as a hundred times its real cost, saturating the
+ * context metric Jev is given and holding every later downgrade behind the cache-rebuild
+ * guard; a scanned PDF by its bytes would do the same.
+ *
+ * It stays an estimate, and errs in both directions. A document's real cost depends on its
+ * page count and content density, which its compressed byte length does not predict. Images
+ * and documents sent by URL or `file_id` carry no payload here to price: only the reference —
+ * the URL or id string, folded into the surrounding JSON — is counted, not the actual cost of
+ * the media it points to. Callers wanting a more reliable, vendor-computed number should count
+ * tokens through the API, which is itself still documented as an estimate and does not accept
+ * a `url` or `file` source either:
+ * https://platform.claude.com/docs/en/build-with-claude/token-counting
  */
 export function tokenEstimate(node) {
   let binary = 0;
@@ -153,7 +197,15 @@ export function tokenEstimate(node) {
     }
     return value;
   });
-  return Math.round(text.length / 4) + binary;
+  // A character outside the BMP takes two UTF-16 units, so what the dense characters occupy is
+  // measured rather than assumed, and only the rest is left to `String.length` over four.
+  let dense = 0;
+  let denseUnits = 0;
+  for (const [char] of text.matchAll(DENSE_SCRIPT)) {
+    dense += 1;
+    denseUnits += char.length;
+  }
+  return Math.round((text.length - denseUnits) / 4) + dense + binary;
 }
 
 const modelForTier = (models, tier) => modelFor(models, tier)?.id ?? idOf(tier);

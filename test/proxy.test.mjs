@@ -467,8 +467,11 @@ test("Jev picking the model already running is not reported as a refused switch"
 });
 
 test("a base64 image is budgeted at the API's ceiling, not at its byte length", () => {
+  // The ceiling is the higher of the API's two resolution tiers, which every model here but
+  // Haiku is on; a byte-length estimate would instead read a 4 MB screenshot as ~1000000
+  // tokens — the encoded string itself, not the smaller decoded byte count, over four.
   const tokens = tokenEstimate({ messages: [{ role: "user", content: [imageBlock(4000000)] }] });
-  assert.ok(tokens > 1600 && tokens < 2000, `estimated ${tokens}`);
+  assert.ok(tokens > 4784 && tokens < 4900, `estimated ${tokens}`);
   // A "data" field that is not a base64 source is ordinary text and counts as such.
   const content = JSON.stringify({ data: "x".repeat(40000) });
   const result = { type: "tool_result", tool_use_id: "t1", content };
@@ -485,11 +488,36 @@ test("a base64 document is sized by its decoded bytes, not at the image ceiling"
   };
   const tokens = tokenEstimate({ messages: [{ role: "user", content: [pdf] }] });
   assert.ok(tokens > 74000 && tokens < 76000, `estimated ${tokens}`);
-  // But not past what the API's page limit can cost: a scanned 5 MB PDF is a few dozen
-  // pages, not the million-plus tokens its bytes would make of it.
-  const scanned = { ...pdf, source: { ...pdf.source, data: "A".repeat(6700000) } };
+  // But capped well under the smallest context window this proxy checks, with margin left for
+  // the rest of the request — not a measured bound on what the API actually charges or accepts
+  // for a scanned PDF this large, and deliberately not sized to 600 pages of realistic per-page
+  // cost, which would land above every tier's window and hold the guard shut for all of them.
+  const scanned = { ...pdf, source: { ...pdf.source, data: "A".repeat(2000000) } };
   const capped = tokenEstimate({ messages: [{ role: "user", content: [scanned] }] });
-  assert.ok(capped > 300000 && capped < 301000, `estimated ${capped}`);
+  assert.ok(capped > 189000 && capped < 190100, `estimated ${capped}`);
+  assert.ok(capped < 200000, "a document alone must never reach even the smallest tier window");
+});
+
+test("text in a dense script is charged a token per character, not a quarter of one", () => {
+  // Length over four reads Traditional Chinese at about a quarter of its real size, and an
+  // under-count is what defeats the window guard: the request goes out as if it fit.
+  const han = "系統提示詞與工具結構描述會一起送出".repeat(1000);
+  const tokens = tokenEstimate({ messages: [{ role: "user", content: han }] });
+  assert.ok(tokens > 17000 && tokens < 17100, `estimated ${tokens}`);
+  // The surrounding JSON, and any other script, keep the shipped rule.
+  const latin = tokenEstimate({ messages: [{ role: "user", content: "x".repeat(17000) }] });
+  assert.ok(latin > 4200 && latin < 4300, `estimated ${latin}`);
+  // A Han character outside the BMP takes two UTF-16 units and is still one character.
+  const astral = tokenEstimate({ messages: [{ role: "user", content: "\u{20000}".repeat(1000) }] });
+  const bmp = tokenEstimate({ messages: [{ role: "user", content: "中".repeat(1000) }] });
+  assert.equal(astral, bmp);
+  // CJK punctuation (、。「」) and fullwidth forms (，！) are dense too, and
+  // `Script_Extensions` alone misses them: every character in this string is one or the
+  // other, so it costs exactly one token each, with no under-counted remainder.
+  const skeleton = tokenEstimate({ messages: [{ role: "user", content: "" }] });
+  const s = "中文，句子。「引用」！".repeat(1000);
+  const punctuated = tokenEstimate({ messages: [{ role: "user", content: s }] });
+  assert.equal(punctuated - skeleton, s.length);
 });
 
 test("the context Jev is told about budgets a pasted image the way the API does", async (t) => {
@@ -511,7 +539,7 @@ test("the context Jev is told about budgets a pasted image the way the API does"
   const text = { type: "text", text: `what is in this screenshot ${process.pid}` };
   await post(port, [{ role: "user", content: [imageBlock(4000000), text] }]);
 
-  assert.ok(told > 1600 && told < 3000, `told ${told}`);
+  assert.ok(told > 4784 && told < 5000, `told ${told}`);
 });
 
 test("a tier reached by policy runs its newest entry, so that is the window checked", async (t) => {
