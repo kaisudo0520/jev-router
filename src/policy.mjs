@@ -43,14 +43,17 @@ function clampToAvailable(tier, available) {
  * @param {number} input.contextTokens approximate size of the conversation so far
  * @param {number} [input.requestTokens] approximate size of the whole request, when the caller
  *                                     measured it; the conversation size otherwise
- * @param {Object<string, number>} [input.windows] context window per tier of the model the
- *                                     caller would send on a change of tier. A tier with no
- *                                     entry is not checked, which is how the Codex proxy,
- *                                     whose models are not Claude's tiers, keeps the shipped
- *                                     behaviour
+ * @param {Object<string, number>} [input.windows] context window per tier, of the model the
+ *                                     caller would send on a change of tier that does not
+ *                                     carry Jev's own choice. A tier with no entry is not
+ *                                     checked, which is how the Codex proxy, whose models are
+ *                                     not Claude's tiers, keeps the shipped behaviour; the same
+ *                                     holds for the tier a refusal falls back to, so a hold this
+ *                                     function was not given a window for is not second-guessed
  * @param {number} [input.exactWindow] context window of the exact model Jev chose, when that
- *                                     is not the model already in use; checked in place of
- *                                     the tier's when the outcome sends that choice
+ *                                     is not the model already in use. It is the only window
+ *                                     checked once an outcome sends that choice, so leaving
+ *                                     it out means unmeasured, not "use the tier's"
  * @param {boolean} [input.cached]     whether a prompt cache exists to lose; false before a
  *                                     session's first decision
  * @param {object} [input.policy]      optional knobs; see `policyFromEnv`. Omitting it, as the
@@ -171,23 +174,31 @@ export function decide({
 
   const outcome = resolve();
 
-  // Whatever the policy resolved, a model the request has outgrown cannot serve it, so the
-  // turn stays on the model already in use — for an upgrade or a same-tier version swap as
-  // much as for a downgrade. Only an outcome that puts a new model on the wire is checked,
-  // and which model that is follows the same rule the proxy uses to pick it: Jev's exact
-  // choice when policy accepted it, the tier's own model otherwise; a hold keeps the current
-  // one. Jev's exact choice may be the model already running, which is no move at all;
-  // only the caller knows the model ids, so it withholds `exactWindow` in that case and the
-  // outcome goes unchecked rather than being reported as held. Reachable under the shipped
-  // cutoff too, since the cutoff gates the messages while this gates the whole request:
-  // upstream would send such a request and have the API reject it, the one place the
-  // shipped behaviour is deliberately not reproduced. An explicit override returned above
-  // and is not checked: that is the user's own call.
+  // A model the estimate says the request has outgrown is held back, whichever way the tier
+  // moved. Only an outcome putting a new model on the wire is checked, against that model and
+  // no other: the exact choice when the rules accepted it, the tier's own model otherwise.
+  // Substituting one for the other would size the request against a model that is not going
+  // out, and in the permissive direction, since a tier's newest entry may take five times what
+  // an older version does. Jev re-picking the model already running is not a move, and only
+  // the caller knows the ids, so it withholds `exactWindow` there; an override returned above
+  // and is never checked at all. The cutoff above gates the messages; this gates the whole
+  // request, system prompt and tool schemas included.
   const exact = shouldUseExactModel(outcome.reason, jev?.choice, outcome.tier);
   const moved = outcome.tier !== current;
-  const window = (exact ? exactWindow : undefined) ?? (moved ? windows[outcome.tier] : undefined);
+  const window = exact ? exactWindow : moved ? windows?.[outcome.tier] : undefined;
   if (window !== undefined && requestTokens > window) {
-    return settle(current, "exceeds-window");
+    // Refusing is only worth it when the fallback candidate can take the request. Holding on
+    // `current` keeps the model in use, which was never measured here; where the account
+    // cannot run `current`, `settle` clamps to the one tier its own availability logic picks —
+    // not a search of `available` for whichever tier fits, so some other tier might still fit
+    // where this one does not. That candidate follows the same rule as any other lookup in
+    // `windows`: measured, the refusal stands only when the estimate says it fits; unmeasured,
+    // it is not second-guessed, same as an outcome the caller never measured a window for.
+    // When the estimate says the candidate does not fit either, refusing buys nothing and the
+    // outcome goes out as it would without this guard.
+    const held = settle(current, "exceeds-window");
+    const heldWindow = held.tier === current ? undefined : windows?.[held.tier];
+    if (heldWindow === undefined || requestTokens <= heldWindow) return held;
   }
   return outcome;
 }

@@ -337,17 +337,20 @@ test("every tier records its context window", () => {
 
 const WINDOWS = { haiku: 200000, sonnet: 1000000, opus: 1000000, fable: 1000000 };
 
-test("never downgrades into a tier whose context window the conversation has outgrown", () => {
+test("never downgrades into a model the conversation has outgrown", () => {
   // `contextTokens` counts messages only, so it is a floor on what the API would see.
   const policy = { downgradeCutoffTokens: 1000000 };
-  const at = (contextTokens) => ({ ...base, current: "opus", contextTokens, windows: WINDOWS, policy });
-  const out = decide({ ...at(250000), jev: sure("haiku") });
+  const at = (contextTokens, exactWindow) =>
+    ({ ...base, current: "opus", contextTokens, windows: WINDOWS, exactWindow, policy });
+  const out = decide({ ...at(250000, 200000), jev: sure("haiku") });
   assert.equal(out.tier, "opus");
   assert.match(out.reason, /exceeds-window/);
-  const fits = decide({ ...at(250000), jev: sure("sonnet") });
-  assert.equal(fits.tier, "sonnet", "a downgrade into a tier with room is still fine");
-  const small = decide({ ...at(150000), jev: sure("haiku") });
+  const fits = decide({ ...at(250000, 1000000), jev: sure("sonnet") });
+  assert.equal(fits.tier, "sonnet", "a downgrade into a model with room is still fine");
+  const small = decide({ ...at(150000, 200000), jev: sure("haiku") });
   assert.equal(small.tier, "haiku", "and so is one that still fits the smaller window");
+  const exact = decide({ ...at(200000, 200000), jev: sure("haiku") });
+  assert.equal(exact.tier, "haiku", "nor one exactly the size of the window");
 });
 
 test("a caller that measures no windows gets no window guard", () => {
@@ -356,6 +359,13 @@ test("a caller that measures no windows gets no window guard", () => {
   const policy = { downgradeCutoffTokens: 1000000 };
   const out = decide({ ...base, current: "opus", jev: sure("haiku"), requestTokens: 500000, policy });
   assert.deepEqual(out, { tier: "haiku", reason: "jev", changed: true });
+  // Saying so with a null rather than by leaving the field out has to survive too, since a
+  // parameter default only covers `undefined`. Checked on the branch that actually reads the
+  // table: a tier the guards chose, which is not Jev's own answer.
+  const capped = { ...base, current: "haiku", jev: unsure("fable"), requestTokens: 500000, policy };
+  const expected = { tier: "sonnet", reason: "low-confidence-capped", changed: true };
+  assert.deepEqual(decide(capped), expected);
+  assert.deepEqual(decide({ ...capped, windows: null }), expected);
 });
 
 test("the window guard follows the model the proxy would actually send", () => {
@@ -384,7 +394,7 @@ test("the window guard sizes the whole request when the caller measures it", () 
   // Claude Code's system prompt and tool schemas ride along with the messages; the messages
   // alone can fit a window the full request no longer does.
   const policy = { downgradeCutoffTokens: 1000000 };
-  const measured = { ...base, current: "opus", contextTokens: 150000, windows: WINDOWS, policy };
+  const measured = { ...base, current: "opus", contextTokens: 150000, windows: WINDOWS, exactWindow: 200000, policy };
   const input = { ...measured, jev: sure("haiku") };
   assert.equal(decide({ ...input, requestTokens: 210000 }).tier, "opus");
   assert.match(decide({ ...input, requestTokens: 210000 }).reason, /exceeds-window/);
@@ -402,9 +412,13 @@ test("the window guard uses the window of the model that would actually run", ()
   assert.equal(decide({ ...input, windows, exactWindow: 200000 }).tier, "opus");
   assert.match(decide({ ...input, windows, exactWindow: 200000 }).reason, /exceeds-window/);
   assert.equal(decide({ ...input, windows, exactWindow: 1000000 }).tier, "sonnet");
-  const tierOnly = decide({ ...input, windows: { sonnet: 200000 } });
-  assert.match(tierOnly.reason, /exceeds-window/, "on a change of tier the tier's window stands in");
-  assert.equal(decide(input).tier, "sonnet", "unmeasured, nothing is refused");
+  // The tier's window is never substituted for an exact choice the caller did not measure:
+  // the newest entry can take five times what the version Jev picked does, so standing in for
+  // it would size the request against a model that is not the one going out, and let through
+  // exactly what the guard exists to refuse.
+  const unmeasured = decide({ ...input, windows: { sonnet: 200000 } });
+  assert.deepEqual(unmeasured, { tier: "sonnet", reason: "jev", changed: true });
+  assert.equal(decide(input).tier, "sonnet", "and with nothing measured at all, nothing is refused");
 });
 
 test("an exact choice that is the model already running is not a move", () => {
@@ -483,10 +497,32 @@ test("a model the request has outgrown is refused whichever way the tier moves",
 test("the window guard also fires under the shipped cutoff when the request is too big", () => {
   // The cutoff gates the messages; the guard gates the whole request. Upstream would send
   // this to Haiku and have the API reject it, the one place the defaults deliberately differ.
-  const input = { ...base, current: "opus", jev: sure("haiku"), contextTokens: 15000, windows: WINDOWS };
+  const input = { ...base, current: "opus", jev: sure("haiku"), contextTokens: 15000, windows: WINDOWS, exactWindow: 200000 };
   const out = decide({ ...input, requestTokens: 210000 });
   assert.equal(out.tier, "opus");
   assert.match(out.reason, /exceeds-window/);
+});
+
+test("a refusal the current tier cannot take lands on one the estimate says fits, or on nothing", () => {
+  // `current` starts at the shipped baseline, which an account's catalog may not carry, so the
+  // hold clamps to the nearest tier it does — and that one has a measured window to check.
+  const windows = { haiku: 200000, sonnet: 1000000 };
+  const input = { ...base, current: "opus", jev: sure("haiku"), requestTokens: 500000 };
+  const roomier = decide({ ...input, available: ["haiku", "sonnet"], windows, exactWindow: 200000 });
+  assert.deepEqual(roomier, { tier: "sonnet", reason: "exceeds-window+unavailable", changed: true });
+  // When nothing the account can run fits either, refusing buys nothing, so the resolved
+  // outcome goes out exactly as it would without the guard.
+  const nothing = decide({ ...input, available: ["haiku"], windows: { haiku: 200000 }, exactWindow: 200000 });
+  assert.equal(nothing.tier, "haiku", "the clamped outcome stands");
+  assert.doesNotMatch(nothing.reason, /exceeds-window/, "and is not reported as a refused switch");
+  // A request exactly the size of the tier the hold clamps to still fits it.
+  const exactFit = decide({ ...input, available: ["haiku", "sonnet"], windows: { haiku: 200000, sonnet: 500000 }, exactWindow: 200000 });
+  assert.deepEqual(exactFit, { tier: "sonnet", reason: "exceeds-window+unavailable", changed: true });
+  // The clamped tier may have no measured window of its own — a caller can supply windows
+  // for some tiers and not others, the same partial measurement `windows` allows throughout.
+  // Unmeasured there is unchecked there too, same as for the outcome's own tier.
+  const unmeasured = decide({ ...input, available: ["haiku", "sonnet"], windows: { haiku: 200000 }, exactWindow: 200000 });
+  assert.deepEqual(unmeasured, { tier: "sonnet", reason: "exceeds-window+unavailable", changed: true });
 });
 
 test("a floor set at fable is the user's explicit ask, so a weak signal may land there", () => {

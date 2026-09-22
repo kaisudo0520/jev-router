@@ -292,7 +292,7 @@ export async function startProxy({ upstreamURL = ANTHROPIC_BASE_URL, route = ask
                 contextTokens,
                 requestTokens,
                 windows: Object.fromEntries(
-                  available.map((tier) => [tier, modelFor(models, tier).contextWindow]),
+                  available.map((tier) => [tier, modelFor(models, tier)?.contextWindow]),
                 ),
                 exactWindow: chosen && chosen.id !== currentModel ? chosen.contextWindow : undefined,
                 cached: state.tier != null,

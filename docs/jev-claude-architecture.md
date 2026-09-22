@@ -53,7 +53,7 @@ flowchart TB
   subgraph routing["Routing — src/router.mjs + src/policy.mjs"]
     direction TB
     jev["TypeSafe / Jev systemOne call\nSends only fresh user prompt plus:\ncurrent tier, approximate context, available tiers"]
-    policy["Policy resolves final tier\n• prompt override wins\n• failure / malformed answer: keep current\n• JEV_STRONG_TIER substitutes for the strong tier\n• JEV_TIER_SHIFT moves choices up the enabled ladder\n• JEV_MIN_AUTO_TIER floors automatic choices\n• low confidence: no downgrade; upgrades capped at sonnet (or its JEV_TIER_SHIFT rung)\n• large context: no downgrade that rebuilds cache\n• no move to a model the request has outgrown\n• unavailable tier: choose nearest stronger available\n• fable requires JEV_ALLOW_FABLE=1"]
+    policy["Policy resolves final tier\n• prompt override wins\n• failure / malformed answer: keep current\n• JEV_STRONG_TIER substitutes for the strong tier\n• JEV_TIER_SHIFT moves choices up the enabled ladder\n• JEV_MIN_AUTO_TIER floors automatic choices\n• low confidence: no downgrade; upgrades capped at sonnet (or its JEV_TIER_SHIFT rung)\n• large context: no downgrade that rebuilds cache\n• no move to a model the estimate says the request has outgrown, normally\n• unavailable tier: choose nearest stronger available\n• fable requires JEV_ALLOW_FABLE=1"]
   end
 
   forward --> anthropic["Anthropic API"]

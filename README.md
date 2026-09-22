@@ -194,8 +194,9 @@ One Jev call per fresh user turn selects a shared abstract tier:
 - failure, timeout, or an unrecognised Jev answer keeps the current model;
 - low confidence never downgrades and caps upgrades at the balanced tier;
 - large conversations refuse downgrades that would waste more prompt-cache work than they save;
-- a move to a model whose context window the whole request has outgrown is refused whichever
-  way it goes, and the turn stays on the current model;
+- a move to a model whose context window the estimate says the whole request has outgrown is
+  refused whichever way it goes, and the turn normally stays on the current model (the Claude
+  interface measures these windows; the Codex interface does not, and is unaffected);
 - unavailable tiers step upward rather than silently choosing a weaker model;
 - the long tier is disabled unless `JEV_ALLOW_FABLE=1`;
 - `JEV_STRONG_TIER` redirects the work the guidance calls strong to another tier,
