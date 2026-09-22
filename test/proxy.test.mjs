@@ -518,6 +518,13 @@ test("text in a dense script is charged a token per character, not a quarter of 
   const s = "中文，句子。「引用」！".repeat(1000);
   const punctuated = tokenEstimate({ messages: [{ role: "user", content: s }] });
   assert.equal(punctuated - skeleton, s.length);
+  // Hiragana, katakana and Hangul are separate branches of the same character class; each is
+  // charged the same way, not just Han. Includes a katakana mark (ー) that carries `Script:
+  // Common` and is only reachable through `Script_Extensions`.
+  for (const dense of ["ひらがな", "カタカナー", "한글"]) {
+    const withDense = tokenEstimate({ messages: [{ role: "user", content: dense.repeat(1000) }] });
+    assert.equal(withDense - skeleton, dense.repeat(1000).length, dense);
+  }
 });
 
 test("the context Jev is told about budgets a pasted image the way the API does", async (t) => {

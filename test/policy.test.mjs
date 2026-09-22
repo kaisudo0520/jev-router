@@ -337,7 +337,7 @@ test("every tier records its context window", () => {
 
 const WINDOWS = { haiku: 200000, sonnet: 1000000, opus: 1000000, fable: 1000000 };
 
-test("never downgrades into a model the conversation has outgrown", () => {
+test("never downgrades into a model the estimate says the conversation has outgrown", () => {
   // `contextTokens` counts messages only, so it is a floor on what the API would see.
   const policy = { downgradeCutoffTokens: 1000000 };
   const at = (contextTokens, exactWindow) =>

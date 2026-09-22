@@ -154,10 +154,13 @@ const DOCUMENT_CEILING_TOKENS = Math.min(...TIERS.map((tier) => tier.contextWind
  * punctuation such as 、。「」; `\uFF00-\uFFEF`, fullwidth Latin/digits and fullwidth punctuation
  * such as ，！？（）) — `Script_Extensions` alone does not cover the punctuation blocks, and CJK
  * prose runs 5-10% punctuation, dense enough on its own to be worth not under-counting. Four
- * characters to a token suits English prose; these run nearer one token per character (a floor,
- * not a ceiling — some, Hangul syllable blocks especially, commonly cost more), so a
- * conversation held in them would otherwise be estimated at about a quarter of its real size —
- * and under-counting is what defeats the window guard, since the request goes out as if it fit.
+ * characters to a token suits English prose; one token per character is not a measured rate
+ * for these scripts either — Anthropic publishes no tokenizer to measure against — but it is
+ * chosen to bias toward over-counting rather than under, which is the direction that defeats
+ * the guard. Charged flat, it is closer to a floor than a ceiling: Hangul syllable blocks in
+ * particular commonly cost more than one token each. A conversation held in these scripts
+ * would otherwise be estimated at about a quarter of its real size under the shipped rule, and
+ * under-counting is what defeats the window guard, since the request goes out as if it fit.
  * Every other script keeps the shipped rule, whether or not it is Latin.
  */
 const DENSE_SCRIPT =
@@ -199,6 +202,11 @@ export function tokenEstimate(node) {
   });
   // A character outside the BMP takes two UTF-16 units, so what the dense characters occupy is
   // measured rather than assumed, and only the rest is left to `String.length` over four.
+  // `matchAll` reads a `/g` regex's own `lastIndex` as its starting point without resetting it
+  // first, so a stray `.test()` or `.exec()` call elsewhere on this module-level regex would
+  // silently skip leading matches on the next call; reset before every use rather than rely on
+  // nothing else in the file ever doing that.
+  DENSE_SCRIPT.lastIndex = 0;
   let dense = 0;
   let denseUnits = 0;
   for (const [char] of text.matchAll(DENSE_SCRIPT)) {
